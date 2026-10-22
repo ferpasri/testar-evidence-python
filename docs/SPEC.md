@@ -43,7 +43,7 @@ Readings distinguish a supplied JSON value, established absence, and unknown inf
 
 The storage API takes an explicit directory. The runnable example creates a new child directory under a caller-selected parent using `<sut>_<objective>_trace-<local timestamp>`. Its default labels are `demo` and `submit-form`; the timestamp includes milliseconds. A collision adds `-2`, `-3`, and so on, reserving a directory before writing to it. Filename labels are sanitized and limited to 32 characters each; the run properties preserve the original labels. Each execution also receives distinct model and run identities.
 
-For example, application and objective labels `parabank` and `denied-loan` produce a name such as `parabank_denied-loan_trace-2026-10-22_15-30-12-123`. Those labels describe the recording; the generic example itself uses demonstration records.
+For example, application and test objective labels `parabank` and `denied-loan` produce a name such as `parabank_denied-loan_trace-2026-10-22_15-30-12-123`. Those labels describe the recording; the generic example itself uses demonstration records.
 
 ## Local storage and artifacts
 
