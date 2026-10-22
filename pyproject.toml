@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "testar-evidence"
+version = "0.2.1"
+description = "Generic records and portable test execution evidence"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/ferpasri/testar-evidence-python"
+Specifications = "https://github.com/ferpasri/testar-evidence-specs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
