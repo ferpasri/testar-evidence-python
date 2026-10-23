@@ -34,7 +34,7 @@ A consuming project can install this checkout as a local dependency:
 python -m pip install -e ../testar-evidence-python
 ```
 
-Import the public API from `testar_evidence`. The distribution name is `testar-evidence` and its version is `0.2.1`. `EvidenceEvent` describes one reported event together with its identity and format version. The storage API accepts an explicit, fresh output directory:
+Import the public API from `testar_evidence`. The distribution name is `testar-evidence` and its version is `0.2.2`. `EvidenceEvent` describes one reported event together with its identity and format version. The storage API accepts an explicit, fresh output directory:
 
 ```python
 from testar_evidence import EvidenceEvent, JsonlStore, Manifest, Run
@@ -51,7 +51,7 @@ The output directory contains `manifest.json`, `evidence.jsonl`, and any referen
 See [local_model.py](examples/local_model.py) for observations, candidate actions, one completed execution, and a property evaluation:
 
 ```sh
-python examples/local_model.py target/traces --sut demo --objective submit-form
+python examples/local_model.py target/traces --sut demo --test-objective submit-form --origin "Example script"
 ```
 
 The first argument is the parent directory. Each execution creates a child directory combining the application name, test objective, and local timestamp, for example:
@@ -60,7 +60,7 @@ The first argument is the parent directory. Each execution creates a child direc
 target/traces/demo_submit-form_trace-2026-10-22_15-30-12-123/
 ```
 
-The names come from `--sut` and `--objective`. Characters unsuitable for filenames are replaced and each label is limited to 32 characters. If the name already exists, a numeric suffix such as `-2` reserves a different directory. Each execution also has distinct model and run identities. The original labels are retained in run properties.
+The filename labels come from `--sut` and `--test-objective`. Characters unsuitable for filenames are replaced and each label is limited to 32 characters. If the name already exists, a numeric suffix such as `-2` reserves a different directory. Each execution also has distinct model and run identities. The original labels are retained in run properties. The optional `--origin` names the source of the demonstration. Without a test objective, the filename uses `run` and the objective property is omitted.
 
 This example records demonstration data; the labels do not launch an application or select a test script. Load a complete trace directory in the evidence dashboard.
 
@@ -79,6 +79,10 @@ Each case supplies an input trace: `manifest.json`, `evidence.jsonl` (one record
 Preparation queries the public [specs releases](https://github.com/ferpasri/testar-evidence-specs/releases) and selects the newest publication, including prereleases. It downloads the conformance files into ignored `target/conformance/` and records the release and file checksums. Tests verify that selection and use the prepared files offline. Repeat preparation to check the newest release, including before CI tests. Deleting `target/` removes the prepared data and example output.
 
 Reader tests open each supplied trace. Producer tests submit its events through the recording API, reopen the generated files, and compare against the same expectations. Invalid cases check the reported error and preserve the previously accepted evidence. The shared [conformance explanation](https://github.com/ferpasri/testar-evidence-specs/blob/main/conformance/README.md#input-trace-reconstructed-model-and-expected-result) describes these file roles and comparisons.
+
+## Run metadata
+
+Run properties support optional origin, test objective, adapter name, and adapter version using the [shared run metadata names](https://github.com/ferpasri/testar-evidence-specs/blob/main/docs/run-metadata.md). Supplied descriptions keep their original text; omitted descriptions stay omitted. See [the implementation specification](docs/SPEC.md#run-metadata) for their use.
 
 ## Release versions
 

@@ -22,7 +22,7 @@ from .records import (
 )
 from .storage import EvidenceReader, JsonlStore
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "SCHEMA_VERSION", "UNSPECIFIED", "ActionCandidate", "ActionDefinition", "ArtifactReference",

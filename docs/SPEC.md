@@ -25,6 +25,21 @@ Property dictionaries preserve nested objects, lists, empty strings, booleans, n
 
 JSON integers retain arbitrary precision. Fractional JSON numbers are read as `Decimal` and written as JSON numbers without converting them to binary floating point. Duplicate object keys, non-finite numbers, unsupported record fields, and nesting beyond 64 levels are rejected.
 
+## Run metadata
+
+Run properties retain the optional [shared metadata](https://github.com/ferpasri/testar-evidence-specs/blob/main/docs/run-metadata.md):
+
+| Property | Meaning |
+| --- | --- |
+| `evidence.origin` | The caller's descriptive tool, script, or integration name. |
+| `evidence.test_objective` | What the caller intends to investigate or verify. |
+| `evidence.adapter` | The adapter name, supplied by the adapter when known. |
+| `evidence.adapter_version` | The adapter's reported version, when known. |
+
+Callers and adapters supply nonblank strings when information is available. The library preserves their original text, including spacing and Unicode, through recording, replay, and reopening. Omitted properties remain omitted. Origin labels are descriptive strings; there is no predefined list of execution styles or tools.
+
+The required `producer` field identifies the component producing evidence. An optional origin describes the caller, while adapter properties describe the translator. Generic library code retains the information supplied by an integration; the adapter knows its own identity and version. A test objective describes intent; check results record the conditions actually evaluated and their outcomes. Run identities keep executions separate even when their descriptions match.
+
 ## Event order and execution links
 
 Observations belong to a running run and their sequence numbers increase within that run. An execution selects an action/target candidate from the latest observation. A run has at most one pending execution.
@@ -41,9 +56,11 @@ Readings distinguish a supplied JSON value, established absence, and unknown inf
 
 ## Trace directory names in the example
 
-The storage API takes an explicit directory. The runnable example creates a new child directory under a caller-selected parent using `<sut>_<objective>_trace-<local timestamp>`. Its default labels are `demo` and `submit-form`; the timestamp includes milliseconds. A collision adds `-2`, `-3`, and so on, reserving a directory before writing to it. Filename labels are sanitized and limited to 32 characters each; the run properties preserve the original labels. Each execution also receives distinct model and run identities.
+The storage API takes an explicit directory. The runnable example creates a new child directory under a caller-selected parent using `<sut>_<test_objective>_trace-<local timestamp>`. The default SUT label is `demo`. An omitted test objective uses `run` only as a filename label; the timestamp includes milliseconds. A collision adds `-2`, `-3`, and so on, reserving a directory before writing to it. Filename labels are sanitized and limited to 32 characters each; the run properties preserve the original labels. Each execution also receives distinct model and run identities.
 
 For example, application and test objective labels `parabank` and `denied-loan` produce a name such as `parabank_denied-loan_trace-2026-10-22_15-30-12-123`. Those labels describe the recording; the generic example itself uses demonstration records.
+
+The example accepts an optional origin and records it as `evidence.origin`. A supplied test objective is recorded as `evidence.test_objective`. An omitted description stays absent from run properties. Filename fallback labels are separate from these descriptions.
 
 ## Local storage and artifacts
 
@@ -61,3 +78,5 @@ Abstraction, cross-source matching, and offline oracle execution belong to consu
 
 Tests exercise shared reader/producer conformance, complete event preservation, artifact integrity, rejected-event behavior, references, replay, execution lifecycles, exact numbers, writer locks, interrupted writes, and explicit tail recovery. Preparation tooling has isolated archive, release-selection, and cache-integrity tests. See the README for the commands.
 
+
+Reader and producer conformance checks include supplied run metadata, omitted metadata, and flexible origin labels. Full event comparisons verify exact descriptions and omitted keys as well as the expected model summary.

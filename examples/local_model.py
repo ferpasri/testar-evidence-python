@@ -29,11 +29,11 @@ def _name_part(value: str, fallback: str) -> str:
     return cleaned[:32].rstrip("-_") or fallback
 
 
-def create_trace_directory(parent: Path, sut: str, objective: str) -> Path:
+def create_trace_directory(parent: Path, sut: str, test_objective: str | None) -> Path:
     """Reserve a new directory, even if two runs have the same timestamp."""
     parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
-    name = f"{_name_part(sut, 'sut')}_{_name_part(objective, 'objective')}_trace-{timestamp}"
+    name = f"{_name_part(sut, 'sut')}_{_name_part(test_objective if test_objective is not None else 'run', 'objective')}_trace-{timestamp}"
     suffix = 1
     while True:
         directory = parent / (name if suffix == 1 else f"{name}-{suffix}")
@@ -44,8 +44,15 @@ def create_trace_directory(parent: Path, sut: str, objective: str) -> Path:
             suffix += 1
 
 
-def main(parent: Path, sut: str = "demo", objective: str = "submit-form") -> Path:
-    directory = create_trace_directory(parent, sut, objective)
+def main(parent: Path, sut: str = "demo", test_objective: str | None = None,
+         origin: str | None = None) -> Path:
+    properties = {"example.sut": sut}
+    for key, value in (("evidence.origin", origin), ("evidence.test_objective", test_objective)):
+        if value is not None:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("Run descriptions must be nonblank strings")
+            properties[key] = value
+    directory = create_trace_directory(parent, sut, test_objective)
     identity = uuid4().hex
     run = "example:run:" + identity
     action = run + ":action:submit"
@@ -62,7 +69,7 @@ def main(parent: Path, sut: str = "demo", objective: str = "submit-form") -> Pat
             store.record(EvidenceEvent(run + ":event:" + str(counter), kind, data))
 
         record("run_started", Run(run, "example", identity,
-            properties={"example.sut": sut, "example.test_objective": objective}))
+            properties=properties))
         record("action_defined", ActionDefinition(action, "click"))
 
         # Adapters supply the captured widgets and the candidates they discovered.
@@ -98,6 +105,7 @@ if __name__ == "__main__":
     parser.add_argument("parent", nargs="?", type=Path, default=Path("target/traces"),
         help="Parent directory for the new trace")
     parser.add_argument("--sut", default="demo", help="Application name used to label the trace")
-    parser.add_argument("--objective", default="submit-form", help="Test objective used to label the trace")
+    parser.add_argument("--test-objective", help="What this run intends to investigate or verify")
+    parser.add_argument("--origin", help="Tool, script, or integration supplying the execution")
     arguments = parser.parse_args()
-    main(arguments.parent, arguments.sut, arguments.objective)
+    main(arguments.parent, arguments.sut, arguments.test_objective, arguments.origin)

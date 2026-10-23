@@ -63,8 +63,26 @@ class ExampleTraceTests(unittest.TestCase):
             run = next(iter(model.runs.values()))["run"]
             self.assertEqual(run["properties"], {
                 "example.sut": "Application / demo",
-                "example.test_objective": "Submit form",
+                "evidence.test_objective": "Submit form",
             })
+
+
+    def test_omitted_descriptions_remain_absent_after_reopening(self):
+        with redirect_stdout(StringIO()):
+            directory = main(self.parent)
+        model = EvidenceReader.read(directory)
+        properties = next(iter(model.runs.values()))["run"]["properties"]
+        self.assertEqual(properties, {"example.sut": "demo"})
+        self.assertTrue(directory.name.startswith("demo_run_trace-"))
+
+    def test_descriptions_preserve_flexible_labels_unicode_and_spacing(self):
+        with redirect_stdout(StringIO()):
+            directory = main(self.parent, "demo", "  Request loan — prêt  ", "  QA équipe / custom CI  ")
+        model = EvidenceReader.read(directory)
+        properties = next(iter(model.runs.values()))["run"]["properties"]
+        self.assertEqual(properties["evidence.origin"], "  QA équipe / custom CI  ")
+        self.assertEqual(properties["evidence.test_objective"], "  Request loan — prêt  ")
+        self.assertNotIn("evidence.adapter", properties)
 
 
 if __name__ == "__main__":
