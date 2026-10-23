@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from . import codec
 from .errors import EvidenceError
-from .model import EvidenceModel
+from .reconstructed_evidence import ReconstructedEvidence
 from .records import validate_artifact, validate_manifest, validate_path
 
 MAX_RECORD_BYTES = 16 * 1024 * 1024
@@ -65,7 +65,7 @@ def _decode(content: bytes):
 
 def _verify_artifacts(root: Path, envelope: dict) -> None:
     event = envelope["event"]
-    if event["kind"] == "observed":
+    if event["event_type"] == "observation_recorded":
         for reference in event["data"]["artifacts"]:
             _artifact(root, reference)
 
@@ -117,7 +117,7 @@ class EvidenceReader:
         return validate_manifest(_decode(content))
 
     @staticmethod
-    def _replay(root: Path, model: EvidenceModel, allow_incomplete: bool = False) -> int:
+    def _replay(root: Path, evidence: ReconstructedEvidence, allow_incomplete: bool = False) -> int:
         completed = 0
         with _regular(root, "evidence.jsonl").open("rb") as source:
             while True:
@@ -131,27 +131,27 @@ class EvidenceReader:
                         return completed
                     raise EvidenceError("incomplete_tail", "Evidence ends with an incomplete line; recover it explicitly")
                 envelope = _decode(line)
-                model.validate(envelope)
+                evidence.validate(envelope)
                 _verify_artifacts(root, envelope)
-                model.apply(envelope)
+                evidence.apply(envelope)
                 completed += len(line)
 
     @staticmethod
-    def read(directory: str | Path) -> EvidenceModel:
+    def read(directory: str | Path) -> ReconstructedEvidence:
         root = Path(directory).resolve(strict=True)
-        model = EvidenceModel(EvidenceReader._manifest(root))
-        EvidenceReader._replay(root, model)
-        return model
+        evidence = ReconstructedEvidence(EvidenceReader._manifest(root))
+        EvidenceReader._replay(root, evidence)
+        return evidence
 
 
 class JsonlStore:
     """Append validated events while holding an exclusive writer lock."""
 
-    def __init__(self, root: Path, lock: _WriterLock, output, model: EvidenceModel):
+    def __init__(self, root: Path, lock: _WriterLock, output, evidence: ReconstructedEvidence):
         self.directory = root
         self._lock = lock
         self._log = output
-        self._model = model
+        self._evidence = evidence
         self._closed = False
         self._failed = False
         self._mutex = threading.RLock()
@@ -177,7 +177,7 @@ class JsonlStore:
                 _write_all(output, content)
             output = log.open("xb", buffering=0)
             created.append(log)
-            return cls(root, lock, output, EvidenceModel(manifest))
+            return cls(root, lock, output, ReconstructedEvidence(manifest))
         except BaseException:
             try:
                 for path in reversed(created):
@@ -191,8 +191,8 @@ class JsonlStore:
         root = Path(directory).resolve(strict=True)
         lock = _WriterLock(root)
         try:
-            model = EvidenceReader.read(root)
-            return cls(root, lock, _regular(root, "evidence.jsonl").open("ab", buffering=0), model)
+            evidence = EvidenceReader.read(root)
+            return cls(root, lock, _regular(root, "evidence.jsonl").open("ab", buffering=0), evidence)
         except BaseException:
             lock.close()
             raise
@@ -207,16 +207,16 @@ class JsonlStore:
             raise EvidenceError("writer_failed", "A write failed; reopen the evidence before continuing")
 
     @property
-    def model(self) -> EvidenceModel:
+    def evidence(self) -> ReconstructedEvidence:
         with self._mutex:
             self._require_open()
-            return self._model.snapshot()
+            return self._evidence.snapshot()
 
     def record(self, envelope) -> bool:
         with self._mutex:
             self._require_writable()
             envelope = codec.to_data(envelope)
-            if not self._model.validate(envelope):
+            if not self._evidence.validate(envelope):
                 return False
             _verify_artifacts(self.directory, envelope)
             content = (codec.dumps(envelope) + "\n").encode("utf-8")
@@ -227,7 +227,7 @@ class JsonlStore:
             except BaseException:
                 self._failed = True
                 raise
-            self._model.apply(envelope)
+            self._evidence.apply(envelope)
             return True
 
     def put_artifact(self, data: bytes, media_type: str, width=None, height=None) -> dict:
@@ -270,8 +270,8 @@ class JsonlStore:
         root = Path(directory).resolve(strict=True)
         lock = _WriterLock(root)
         try:
-            model = EvidenceModel(EvidenceReader._manifest(root))
-            completed = EvidenceReader._replay(root, model, allow_incomplete=True)
+            evidence = ReconstructedEvidence(EvidenceReader._manifest(root))
+            completed = EvidenceReader._replay(root, evidence, allow_incomplete=True)
             path = _regular(root, "evidence.jsonl")
             removed = path.stat().st_size - completed
             if removed:

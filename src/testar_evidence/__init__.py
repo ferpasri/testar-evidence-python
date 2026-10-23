@@ -1,32 +1,57 @@
 """Generic records, validation, and portable test execution evidence."""
 
 from .errors import EvidenceError
-from .model import EvidenceModel
+from .reconstructed_evidence import ReconstructedEvidence
 from .records import (
     SCHEMA_VERSION,
     UNSPECIFIED,
-    ActionCandidate,
-    ActionDefinition,
+    ActionDescription,
+    ActionExecution,
+    ActionExecutionResult,
     ArtifactReference,
-    CheckReading,
-    CheckResult,
-    CheckRule,
-    CheckTarget,
-    ConcreteState,
+    AvailableAction,
     EvidenceEvent,
-    Execution,
     Manifest,
     Observation,
-    Run,
+    ObservedValue,
+    Oracle,
+    OracleResult,
+    OracleSeverity,
+    OracleTarget,
+    RecordedState,
+    RecordedTransition,
+    TestRun,
+    TestSequence,
     Widget,
 )
 from .storage import EvidenceReader, JsonlStore
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 __all__ = [
-    "SCHEMA_VERSION", "UNSPECIFIED", "ActionCandidate", "ActionDefinition", "ArtifactReference",
-    "CheckReading", "CheckResult", "CheckRule", "CheckTarget", "ConcreteState",
-    "EvidenceEvent", "EvidenceError", "EvidenceModel", "EvidenceReader", "Execution",
-    "JsonlStore", "Manifest", "Observation", "Run", "Widget", "__version__",
+    "ActionDescription",
+    "ActionExecution",
+    "ActionExecutionResult",
+    "ArtifactReference",
+    "AvailableAction",
+    "EvidenceError",
+    "EvidenceEvent",
+    "ReconstructedEvidence",
+    "EvidenceReader",
+    "JsonlStore",
+    "Manifest",
+    "Observation",
+    "ObservedValue",
+    "Oracle",
+    "OracleResult",
+    "OracleSeverity",
+    "OracleTarget",
+    "RecordedState",
+    "RecordedTransition",
+    "SCHEMA_VERSION",
+    "TestRun",
+    "TestSequence",
+    "UNSPECIFIED",
+    "Widget",
+    "__version__",
 ]

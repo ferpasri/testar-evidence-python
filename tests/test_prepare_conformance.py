@@ -30,7 +30,7 @@ def archive(extra=(), *, omit=()):
     entries = [
         ("repository/README.md", b"Repository documentation"),
         ("repository/conformance/README.md", b"Shared cases"),
-        ("repository/conformance/cases/example/manifest.json", b'{"schema_version":2,"model":"example"}\n'),
+        ("repository/conformance/cases/example/manifest.json", b'{"schema_version":3,"evidence_id":"example"}\n'),
         ("repository/conformance/cases/example/evidence.jsonl", b"{}\n"),
         ("repository/conformance/cases/example/expected.json", b'{"status":"accepted"}\n'),
     ]

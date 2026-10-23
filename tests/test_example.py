@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from examples.local_model import create_trace_directory, main
+from examples.record_evidence import create_trace_directory, main
 from testar_evidence import EvidenceReader
 
 
@@ -15,7 +15,7 @@ class ExampleTraceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.parent = Path(self.temporary.name)
-        self.clock = patch("examples.local_model.datetime")
+        self.clock = patch("examples.record_evidence.datetime")
         clock = self.clock.start()
         self.addCleanup(self.clock.stop)
         clock.now.return_value = datetime(2026, 10, 22, 15, 30, 12, 123456)
@@ -53,14 +53,14 @@ class ExampleTraceTests(unittest.TestCase):
         left = EvidenceReader.read(first)
         right = EvidenceReader.read(second)
         self.assertNotEqual(first, second)
-        self.assertNotEqual(left.manifest["model"], right.manifest["model"])
-        self.assertTrue(set(left.runs).isdisjoint(right.runs))
+        self.assertNotEqual(left.manifest["evidence_id"], right.manifest["evidence_id"])
+        self.assertTrue(set(left.test_runs).isdisjoint(right.test_runs))
         self.assertEqual((first / "evidence.jsonl").read_bytes(), first_bytes)
-        for model in (left, right):
-            self.assertEqual(model.event_count, 9)
-            self.assertEqual(len(model.links()), 1)
-            self.assertEqual(model.checks[0]["status"], "passed")
-            run = next(iter(model.runs.values()))["run"]
+        for evidence in (left, right):
+            self.assertEqual(evidence.event_count, 12)
+            self.assertEqual(len(evidence.recorded_transitions), 1)
+            self.assertEqual(evidence.oracle_results[0]["oracle_status"], "passed")
+            run = next(iter(evidence.test_runs.values()))["test_run"]
             self.assertEqual(run["properties"], {
                 "example.sut": "Application / demo",
                 "evidence.test_objective": "Submit form",
@@ -70,16 +70,16 @@ class ExampleTraceTests(unittest.TestCase):
     def test_omitted_descriptions_remain_absent_after_reopening(self):
         with redirect_stdout(StringIO()):
             directory = main(self.parent)
-        model = EvidenceReader.read(directory)
-        properties = next(iter(model.runs.values()))["run"]["properties"]
+        evidence = EvidenceReader.read(directory)
+        properties = next(iter(evidence.test_runs.values()))["test_run"]["properties"]
         self.assertEqual(properties, {"example.sut": "demo"})
         self.assertTrue(directory.name.startswith("demo_run_trace-"))
 
     def test_descriptions_preserve_flexible_labels_unicode_and_spacing(self):
         with redirect_stdout(StringIO()):
             directory = main(self.parent, "demo", "  Request loan — prêt  ", "  QA équipe / custom CI  ")
-        model = EvidenceReader.read(directory)
-        properties = next(iter(model.runs.values()))["run"]["properties"]
+        evidence = EvidenceReader.read(directory)
+        properties = next(iter(evidence.test_runs.values()))["test_run"]["properties"]
         self.assertEqual(properties["evidence.origin"], "  QA équipe / custom CI  ")
         self.assertEqual(properties["evidence.test_objective"], "  Request loan — prêt  ")
         self.assertNotIn("evidence.adapter", properties)

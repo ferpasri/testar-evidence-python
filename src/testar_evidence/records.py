@@ -1,21 +1,26 @@
-"""Generic evidence records and validation of individual wire events."""
+"""Generic evidence records used by adapters and the schema-3 JSON format."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
+from decimal import Decimal
+import math
 import re
 from typing import Any
 
 from .codec import to_data
 from .errors import EvidenceError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_UNSIGNED_64 = (1 << 64) - 1
 
 
 class _Unspecified:
     def __repr__(self) -> str:
         return "UNSPECIFIED"
+
+    def __deepcopy__(self, memo):
+        return self
 
 
 UNSPECIFIED = _Unspecified()
@@ -29,7 +34,7 @@ class _Record:
 
 @dataclass(frozen=True)
 class Manifest(_Record):
-    model: str
+    evidence_id: str
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -43,25 +48,34 @@ class Manifest(_Record):
 @dataclass(frozen=True)
 class EvidenceEvent:
     id: str
-    kind: str
+    event_type: str
     data: Any
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return validate_event({"schema_version": self.schema_version, "id": self.id,
-                               "event": {"kind": self.kind, "data": to_data(self.data)}})
+                               "event": {"event_type": self.event_type, "data": to_data(self.data)}})
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> EvidenceEvent:
         record = validate_event(value)
-        return cls(record["id"], record["event"]["kind"], record["event"]["data"], record["schema_version"])
+        return cls(record["id"], record["event"]["event_type"], record["event"]["data"], record["schema_version"])
 
 
 @dataclass(frozen=True)
-class Run(_Record):
+class TestRun(_Record):
     id: str
     producer: str
     source_run: str
+    properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TestSequence(_Record):
+    id: str
+    test_run: str
+    sequence_index: int
+    source_sequence: str
     properties: dict[str, Any] = field(default_factory=dict)
 
 
@@ -73,7 +87,7 @@ class Widget(_Record):
 
 
 @dataclass(frozen=True)
-class ConcreteState(_Record):
+class RecordedState(_Record):
     id: str
     properties: dict[str, Any] = field(default_factory=dict)
     widgets: list[Widget | dict[str, Any]] = field(default_factory=list)
@@ -81,15 +95,15 @@ class ConcreteState(_Record):
 
 
 @dataclass(frozen=True)
-class ActionCandidate(_Record):
-    action: str
-    target: str | None = None
+class AvailableAction(_Record):
+    action_description: str
+    target_widget: str | None = None
 
 
 @dataclass(frozen=True)
-class ActionDefinition(_Record):
+class ActionDescription(_Record):
     id: str
-    kind: str
+    action_type: str
     properties: dict[str, Any] = field(default_factory=dict)
 
 
@@ -106,109 +120,131 @@ class ArtifactReference(_Record):
 @dataclass(frozen=True)
 class Observation(_Record):
     id: str
-    run: str
-    sequence: int
+    test_sequence: str
+    observation_index: int
     timestamp_micros: int
-    state: ConcreteState | dict[str, Any]
-    candidates: list[ActionCandidate | dict[str, Any]] = field(default_factory=list)
-    candidate_scope: str = "unknown"
+    recorded_state: RecordedState | dict[str, Any]
+    available_action_scope: str
+    available_actions: list[AvailableAction | dict[str, Any]] = field(default_factory=list)
     artifacts: list[ArtifactReference | dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class Execution(_Record):
+class ActionExecution(_Record):
     id: str
-    run: str
-    source: str
-    action: str
-    target: str | None = None
+    test_sequence: str
+    source_observation: str
+    action_description: str
+    target_widget: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class CheckRule(_Record):
-    id: str
-    version: str | None = None
-    parameters: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {key: value for key, value in super().to_dict().items() if value is not None}
+class ActionExecutionResult(_Record):
+    action_execution: str
+    outcome: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
-class CheckReading:
-    kind: str
-    reading: Any = UNSPECIFIED
+class RecordedTransition(_Record):
+    action_execution: str
+    resulting_observation: str
+
+
+@dataclass(frozen=True)
+class Oracle(_Record):
+    id: str
+    version: str | _Unspecified = UNSPECIFIED
+    parameters: dict[str, Any] | _Unspecified = UNSPECIFIED
+
+
+@dataclass(frozen=True)
+class OracleSeverity(_Record):
+    label: str
+    value: int | float | Decimal | _Unspecified = UNSPECIFIED
+
+
+@dataclass(frozen=True)
+class ObservedValue:
+    value_status: str
+    observed: Any = UNSPECIFIED
 
     def to_dict(self) -> dict[str, Any]:
-        result = {"kind": self.kind}
-        if self.reading is not UNSPECIFIED:
-            result["value"] = to_data(self.reading)
-        _reading(result)
+        result = {"value_status": self.value_status}
+        if self.observed is not UNSPECIFIED:
+            result["value"] = to_data(self.observed)
+        _observed_value(result)
         return result
 
     @classmethod
-    def value(cls, value: Any) -> CheckReading:
+    def value(cls, value: Any) -> ObservedValue:
         return cls("value", value)
 
     @classmethod
-    def absent(cls) -> CheckReading:
+    def absent(cls) -> ObservedValue:
         return cls("absent")
 
     @classmethod
-    def unknown(cls) -> CheckReading:
+    def unknown(cls) -> ObservedValue:
         return cls("unknown")
 
 
 @dataclass(frozen=True)
-class CheckTarget:
-    kind: str
+class OracleTarget:
+    target_type: str
     references: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        result = {"kind": self.kind, **self.references}
-        _target(result)
+        result = {"target_type": self.target_type, **self.references}
+        _oracle_target(result)
         return result
 
     @classmethod
-    def run(cls) -> CheckTarget:
-        return cls("run")
+    def test_run(cls) -> OracleTarget:
+        return cls("test_run")
 
     @classmethod
-    def observation(cls, observation: str) -> CheckTarget:
+    def test_sequence(cls) -> OracleTarget:
+        return cls("test_sequence")
+
+    @classmethod
+    def observation(cls, observation: str) -> OracleTarget:
         return cls("observation", {"observation": observation})
 
     @classmethod
-    def state_property(cls, observation: str, property: str) -> CheckTarget:
+    def state_property(cls, observation: str, property: str) -> OracleTarget:
         return cls("state_property", {"observation": observation, "property": property})
 
     @classmethod
-    def widget(cls, observation: str, widget: str) -> CheckTarget:
+    def widget(cls, observation: str, widget: str) -> OracleTarget:
         return cls("widget", {"observation": observation, "widget": widget})
 
     @classmethod
-    def widget_property(cls, observation: str, widget: str, property: str) -> CheckTarget:
+    def widget_property(cls, observation: str, widget: str, property: str) -> OracleTarget:
         return cls("widget_property", {"observation": observation, "widget": widget, "property": property})
 
     @classmethod
-    def execution(cls, execution: str) -> CheckTarget:
-        return cls("execution", {"execution": execution})
+    def action_execution(cls, action_execution: str) -> OracleTarget:
+        return cls("action_execution", {"action_execution": action_execution})
 
     @classmethod
-    def sequence(cls, from_observation: str, to_observation: str) -> CheckTarget:
-        return cls("sequence", {"from_observation": from_observation, "to_observation": to_observation})
+    def observation_range(cls, first_observation: str, last_observation: str) -> OracleTarget:
+        return cls("observation_range", {"first_observation": first_observation, "last_observation": last_observation})
 
 
 @dataclass(frozen=True)
-class CheckResult(_Record):
-    run: str
+class OracleResult(_Record):
+    test_run: str
     name: str
-    rule: CheckRule | dict[str, Any]
-    target: CheckTarget | dict[str, Any]
-    status: str
-    expected: Any = UNSPECIFIED
-    actual: CheckReading | dict[str, Any] | _Unspecified = UNSPECIFIED
-    details: dict[str, Any] = field(default_factory=dict)
+    oracle: Oracle | dict[str, Any]
+    oracle_target: OracleTarget | dict[str, Any]
+    oracle_status: str
+    test_sequence: str | _Unspecified = UNSPECIFIED
+    expected_value: Any = UNSPECIFIED
+    observed_value: ObservedValue | dict[str, Any] | _Unspecified = UNSPECIFIED
+    oracle_severity: OracleSeverity | dict[str, Any] | _Unspecified = UNSPECIFIED
+    oracle_details: dict[str, Any] = field(default_factory=dict)
 
 
 def _require(condition: bool, message: str, field: str | None = None, code: str = "invalid_record") -> None:
@@ -290,12 +326,11 @@ def _artifact(value: Any) -> None:
     data = _fields(value, {"id", "path", "media_type", "sha256"}, {"width", "height"}, "artifact")
     _texts(data, ("id", "media_type"))
     validate_path(data["path"])
-    _require(isinstance(data["sha256"], str) and re.fullmatch(r"[0-9a-fA-F]{64}", data["sha256"]) is not None,
-             "Artifact SHA-256 must have 64 hexadecimal characters", "sha256")
+    _require(isinstance(data["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", data["sha256"]) is not None,
+             "Artifact SHA-256 must have 64 lowercase hexadecimal characters", "sha256")
     for dimension in ("width", "height"):
         if data.get(dimension) is not None:
-            _unsigned(data[dimension], dimension, (1 << 32) - 1)
-            _require(data[dimension] > 0, "Artifact dimensions must be positive", dimension)
+            _unsigned(data[dimension], dimension)
 
 
 def _state(value: Any) -> set[str]:
@@ -307,7 +342,7 @@ def _state(value: Any) -> set[str]:
     _require(data["capture"] != "unavailable" or not widgets, "Unavailable capture cannot contain widgets")
     parents: dict[str, str | None] = {}
     for widget in widgets:
-        _fields(widget, {"id", "properties"}, {"parent"}, "widget")
+        _fields(widget, {"id", "parent", "properties"}, name="widget")
         _text(widget["id"], "id")
         _optional_text(widget, "parent")
         _properties(widget["properties"])
@@ -319,31 +354,33 @@ def _state(value: Any) -> set[str]:
         current = identifier
         while current is not None and current not in completed:
             _require(current not in ancestry, "Widget hierarchy contains a cycle")
-            _require(current in parents, f"Unknown parent widget: {current}", code="unknown_reference")
+            _require(current in parents, f"Unknown parent widget: {current}", code="invalid_reference")
             ancestry.add(current)
             current = parents[current]
         completed.update(ancestry)
     return set(parents)
 
 
+
 def _observation(value: Any) -> None:
-    data = _fields(value, {"id", "run", "sequence", "timestamp_micros", "state", "candidates", "artifacts"},
-                   {"candidate_scope"}, "observation")
-    _texts(data, ("id", "run"))
-    _unsigned(data["sequence"], "sequence")
+    data = _fields(value, {"id", "test_sequence", "observation_index", "timestamp_micros", "recorded_state",
+                          "available_actions", "available_action_scope", "artifacts"}, name="observation")
+    _texts(data, ("id", "test_sequence"))
+    _unsigned(data["observation_index"], "observation_index")
     _unsigned(data["timestamp_micros"], "timestamp_micros")
-    _choice(data.get("candidate_scope", "unknown"), {"unknown", "generated", "eligible"}, "candidate_scope")
-    widgets = _state(data["state"])
-    candidates: set[tuple[str, str | None]] = set()
-    for candidate in _list(data["candidates"], "candidates"):
-        _fields(candidate, {"action"}, {"target"}, "candidate")
-        _text(candidate["action"], "action")
-        _optional_text(candidate, "target")
-        target = candidate.get("target")
-        _require(target is None or target in widgets, f"Unknown candidate widget: {target}", code="unknown_reference")
-        key = (candidate["action"], target)
-        _require(key not in candidates, "Duplicate action candidate", code="conflict")
-        candidates.add(key)
+    _choice(data["available_action_scope"], {"unknown", "generated", "eligible"}, "available_action_scope")
+    widgets = _state(data["recorded_state"])
+    available_actions: set[tuple[str, str | None]] = set()
+    for action in _list(data["available_actions"], "available_actions"):
+        _fields(action, {"action_description", "target_widget"}, name="available action")
+        _text(action["action_description"], "action_description")
+        _optional_text(action, "target_widget")
+        target_widget = action["target_widget"]
+        _require(target_widget is None or target_widget in widgets, "Unknown available-action widget",
+                 "target_widget", "invalid_reference")
+        key = (action["action_description"], target_widget)
+        _require(key not in available_actions, "Duplicate available action", code="conflict")
+        available_actions.add(key)
     artifacts: set[str] = set()
     for artifact in _list(data["artifacts"], "artifacts"):
         _artifact(artifact)
@@ -351,90 +388,123 @@ def _observation(value: Any) -> None:
         artifacts.add(artifact["id"])
 
 
-def _target(value: Any) -> None:
-    data = _object(value, "target")
-    kinds = {"run": (), "observation": ("observation",), "state_property": ("observation", "property"),
-             "widget": ("observation", "widget"), "widget_property": ("observation", "widget", "property"),
-             "execution": ("execution",), "sequence": ("from_observation", "to_observation")}
-    _choice(data.get("kind"), set(kinds), "target kind")
-    names = kinds[data["kind"]]
-    _fields(data, {"kind", *names}, name="target")
+def _oracle_target(value: Any) -> None:
+    data = _object(value, "oracle_target")
+    target_fields = {
+        "test_run": (), "test_sequence": (), "observation": ("observation",),
+        "state_property": ("observation", "property"), "widget": ("observation", "widget"),
+        "widget_property": ("observation", "widget", "property"),
+        "action_execution": ("action_execution",),
+        "observation_range": ("first_observation", "last_observation"),
+    }
+    _choice(data.get("target_type"), set(target_fields), "oracle_target.target_type")
+    names = target_fields[data["target_type"]]
+    _fields(data, {"target_type", *names}, name="oracle_target")
     _texts(data, names)
 
 
-def _reading(value: Any) -> None:
-    data = _object(value, "actual")
-    _choice(data.get("kind"), {"value", "absent", "unknown"}, "reading kind")
-    required = {"kind", "value"} if data["kind"] == "value" else {"kind"}
-    _fields(data, required, name="actual")
+def _observed_value(value: Any) -> None:
+    data = _object(value, "observed_value")
+    _choice(data.get("value_status"), {"value", "absent", "unknown"}, "observed_value.value_status")
+    required = {"value_status", "value"} if data["value_status"] == "value" else {"value_status"}
+    _fields(data, required, name="observed_value")
 
 
-def _check(value: Any) -> None:
-    data = _fields(value, {"run", "name", "rule", "target", "status"}, {"expected", "actual", "details"}, "check")
-    _texts(data, ("run", "name"))
-    _choice(data["status"], {"passed", "failed", "pending", "unknown", "error"}, "status")
-    rule = _fields(data["rule"], {"id"}, {"version", "parameters"}, "rule")
-    _text(rule["id"], "id")
-    if "version" in rule:
-        _text(rule["version"], "version")
-    if "parameters" in rule:
-        _properties(rule["parameters"], "parameters")
-    _target(data["target"])
-    if "actual" in data:
-        _reading(data["actual"])
-    if "details" in data:
-        _properties(data["details"], "details")
+def _oracle_severity(value: Any) -> None:
+    data = _fields(value, {"label"}, {"value"}, "oracle_severity")
+    label = data["label"]
+    _require(isinstance(label, str) and bool(label.strip())
+             and not any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in label),
+             "Oracle severity label must be nonblank text without control characters",
+             "oracle_severity.label", "invalid_oracle_severity")
+    if "value" in data:
+        number = data["value"]
+        finite = isinstance(number, int) or isinstance(number, float) and math.isfinite(number)
+        finite = finite or isinstance(number, Decimal) and number.is_finite()
+        _require(type(number) is not bool and finite, "Oracle severity value must be a finite number",
+                 "oracle_severity.value", "invalid_oracle_severity")
+
+
+def _oracle_result(value: Any) -> None:
+    data = _fields(value, {"test_run", "name", "oracle", "oracle_target", "oracle_status", "oracle_details"},
+                   {"test_sequence", "expected_value", "observed_value", "oracle_severity"}, "oracle result")
+    _texts(data, ("test_run", "name"))
+    if "test_sequence" in data:
+        _text(data["test_sequence"], "test_sequence")
+    _choice(data["oracle_status"], {"passed", "failed", "pending", "unknown", "error"}, "oracle_status")
+    oracle = _fields(data["oracle"], {"id"}, {"version", "parameters"}, "oracle")
+    _text(oracle["id"], "id")
+    if "version" in oracle:
+        _text(oracle["version"], "version")
+    if "parameters" in oracle:
+        _properties(oracle["parameters"], "parameters")
+    _oracle_target(data["oracle_target"])
+    if "observed_value" in data:
+        _observed_value(data["observed_value"])
+    if "oracle_severity" in data:
+        _oracle_severity(data["oracle_severity"])
+    _properties(data["oracle_details"], "oracle_details")
 
 
 def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
     result = to_data(value)
-    _fields(result, {"schema_version", "model"}, name="manifest")
+    _fields(result, {"schema_version", "evidence_id"}, name="manifest")
     _require(type(result["schema_version"]) is int and result["schema_version"] == SCHEMA_VERSION,
              f"Supported schema version is {SCHEMA_VERSION}", "schema_version")
-    _text(result["model"], "model")
+    _text(result["evidence_id"], "evidence_id")
     return result
 
 
 def validate_event(value: dict[str, Any]) -> dict[str, Any]:
-    """Validate one event and its local references; return an independent copy."""
+    """Validate one Evidence Event and its local references; return an independent copy."""
     result = to_data(value)
-    _fields(result, {"schema_version", "id", "event"}, name="evidence event")
+    _fields(result, {"schema_version", "id", "event"}, name="Evidence Event")
     _require(type(result["schema_version"]) is int and result["schema_version"] == SCHEMA_VERSION,
              f"Supported schema version is {SCHEMA_VERSION}", "schema_version")
     _text(result["id"], "id")
-    event = _fields(result["event"], {"kind", "data"}, name="event")
-    _text(event["kind"], "kind")
-    kind = event["kind"]
+    event = _fields(result["event"], {"event_type", "data"}, name="event")
+    event_type = event["event_type"]
+    _text(event_type, "event_type")
     data = _object(event["data"], "data")
-    if kind == "run_started":
-        _fields(data, {"id", "producer", "source_run", "properties"}, name="run")
+    if event_type == "test_run_started":
+        _fields(data, {"id", "producer", "source_run", "properties"}, name="test run")
         _texts(data, ("id", "producer", "source_run"))
         _properties(data["properties"])
-    elif kind == "action_defined":
-        _fields(data, {"id", "kind", "properties"}, name="action")
-        _texts(data, ("id", "kind"))
+    elif event_type == "test_sequence_started":
+        _fields(data, {"id", "test_run", "sequence_index", "source_sequence", "properties"}, name="test sequence")
+        _texts(data, ("id", "test_run", "source_sequence"))
+        _unsigned(data["sequence_index"], "sequence_index")
+        _require(data["sequence_index"] > 0, "Test sequence index must be positive", "sequence_index")
         _properties(data["properties"])
-    elif kind == "observed":
+    elif event_type == "action_described":
+        _fields(data, {"id", "action_type", "properties"}, name="action description")
+        _texts(data, ("id", "action_type"))
+        _properties(data["properties"])
+    elif event_type == "observation_recorded":
         _observation(data)
-    elif kind == "action_selected":
-        _fields(data, {"id", "run", "source", "action", "parameters"}, {"target"}, "execution")
-        _texts(data, ("id", "run", "source", "action"))
-        _optional_text(data, "target")
+    elif event_type == "action_selected":
+        _fields(data, {"id", "test_sequence", "source_observation", "action_description", "target_widget", "parameters"},
+                name="action execution")
+        _texts(data, ("id", "test_sequence", "source_observation", "action_description"))
+        _optional_text(data, "target_widget")
         _properties(data["parameters"], "parameters")
-    elif kind == "action_submitted":
-        _fields(data, {"execution", "accepted"}, {"error"}, "submission")
-        _text(data["execution"], "execution")
-        _require(type(data["accepted"]) is bool, "Submission accepted must be a boolean", "accepted")
-        _require(data.get("error") is None or isinstance(data["error"], str), "Submission error must be text or null", "error")
-        _require(not data["accepted"] or data.get("error") is None, "Accepted submission cannot carry an error")
-    elif kind == "action_result":
-        _fields(data, {"execution", "observation"}, name="result")
-        _texts(data, ("execution", "observation"))
-    elif kind == "checked":
-        _check(data)
-    elif kind == "run_finished":
-        _fields(data, {"run", "reason"}, name="ending")
-        _texts(data, ("run", "reason"))
+    elif event_type == "action_execution_reported":
+        _fields(data, {"action_execution", "outcome", "error"}, name="action execution result")
+        _text(data["action_execution"], "action_execution")
+        _choice(data["outcome"], {"returned", "error"}, "outcome")
+        _require(data["error"] is None if data["outcome"] == "returned" else isinstance(data["error"], str),
+                 "Returned calls have null error; errors carry their reported text", "error")
+    elif event_type == "transition_recorded":
+        _fields(data, {"action_execution", "resulting_observation"}, name="recorded transition")
+        _texts(data, ("action_execution", "resulting_observation"))
+    elif event_type == "oracle_result_recorded":
+        _oracle_result(data)
+    elif event_type == "test_sequence_finished":
+        _fields(data, {"test_sequence", "reason"}, name="test sequence ending")
+        _texts(data, ("test_sequence", "reason"))
+    elif event_type == "test_run_finished":
+        _fields(data, {"test_run", "reason"}, name="test run ending")
+        _texts(data, ("test_run", "reason"))
     else:
-        raise EvidenceError("invalid_record", f"Unknown event kind: {kind}", "kind")
+        raise EvidenceError("invalid_record", f"Unknown event type: {event_type}", "event_type")
     return result

@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from testar_evidence import EvidenceError, EvidenceModel, EvidenceReader, JsonlStore
+from testar_evidence import EvidenceError, ReconstructedEvidence, EvidenceReader, JsonlStore
 from tests.support import conformance_cases, read_events, read_json
 
 
@@ -15,7 +15,7 @@ def _error(error: EvidenceError, envelope: dict) -> dict:
 
 def _artifacts(envelope: dict) -> list[dict]:
     event = envelope["event"]
-    return event["data"]["artifacts"] if event["kind"] == "observed" else []
+    return event["data"]["artifacts"] if event["event_type"] == "observation_recorded" else []
 
 
 def _read_case(source: Path) -> None:
@@ -24,31 +24,31 @@ def _read_case(source: Path) -> None:
     events = read_events(source)
     before = (source / "evidence.jsonl").read_bytes()
     if expected["status"] == "accepted":
-        model = EvidenceReader.read(source)
-        assertion.assertEqual(expected, model.summary())
-        assertion.assertEqual(events, model.events)
+        evidence = EvidenceReader.read(source)
+        assertion.assertEqual(expected, evidence.summary())
+        assertion.assertEqual(events, evidence.events)
     else:
         with assertion.assertRaises(EvidenceError) as failure:
             EvidenceReader.read(source)
         assertion.assertEqual(expected["error"]["code"], failure.exception.code)
         assertion.assertEqual(expected["error"]["field"], failure.exception.field)
-        model = EvidenceModel(read_json(source / "manifest.json"))
+        evidence = ReconstructedEvidence(read_json(source / "manifest.json"))
         accepted = []
         rejected = None
         for event in events:
-            previous = deepcopy(model.summary())
-            previous_events = deepcopy(model.events)
+            previous = deepcopy(evidence.summary())
+            previous_events = deepcopy(evidence.events)
             try:
-                assertion.assertTrue(model.apply(event))
+                assertion.assertTrue(evidence.apply(event))
                 accepted.append(event)
             except EvidenceError as error:
                 rejected = _error(error, event)
-                assertion.assertEqual(previous, model.summary())
-                assertion.assertEqual(previous_events, model.events)
+                assertion.assertEqual(previous, evidence.summary())
+                assertion.assertEqual(previous_events, evidence.events)
                 break
         assertion.assertEqual(expected["error"], rejected)
-        assertion.assertEqual(expected["accepted_prefix"], model.summary())
-        assertion.assertEqual(accepted, model.events)
+        assertion.assertEqual(expected["accepted_prefix"], evidence.summary())
+        assertion.assertEqual(accepted, evidence.events)
     assertion.assertEqual(before, (source / "evidence.jsonl").read_bytes())
 
 
@@ -68,26 +68,26 @@ def _produce_case(source: Path) -> None:
                         width=artifact.get("width"), height=artifact.get("height"))
                     assertion.assertEqual(artifact, reference)
                     assertion.assertEqual(content, store.read_artifact(reference))
-                previous = deepcopy(store.model.summary())
-                previous_events = deepcopy(store.model.events)
+                previous = deepcopy(store.evidence.summary())
+                previous_events = deepcopy(store.evidence.events)
                 before = (destination / "evidence.jsonl").read_bytes()
                 try:
                     assertion.assertTrue(store.record(event))
                 except EvidenceError as error:
                     rejected = _error(error, event)
-                    assertion.assertEqual(previous, store.model.summary())
-                    assertion.assertEqual(previous_events, store.model.events)
+                    assertion.assertEqual(previous, store.evidence.summary())
+                    assertion.assertEqual(previous_events, store.evidence.events)
                     assertion.assertEqual(before, (destination / "evidence.jsonl").read_bytes())
                     break
                 accepted.append(event)
                 after = (destination / "evidence.jsonl").read_bytes()
-                current = deepcopy(store.model.summary())
+                current = deepcopy(store.evidence.summary())
                 assertion.assertFalse(store.record(deepcopy(event)),
                     "Identical retries must not append a second record")
                 assertion.assertEqual(after, (destination / "evidence.jsonl").read_bytes())
-                assertion.assertEqual(current, store.model.summary())
-                assertion.assertEqual(accepted, store.model.events)
-            result = store.model.summary()
+                assertion.assertEqual(current, store.evidence.summary())
+                assertion.assertEqual(accepted, store.evidence.events)
+            result = store.evidence.summary()
         if expected["status"] == "accepted":
             assertion.assertIsNone(rejected)
             assertion.assertEqual(expected, result)
@@ -95,8 +95,8 @@ def _produce_case(source: Path) -> None:
             assertion.assertEqual(expected["error"], rejected)
             assertion.assertEqual(expected["accepted_prefix"], result)
         with JsonlStore.open(destination) as reopened:
-            assertion.assertEqual(result, reopened.model.summary())
-            assertion.assertEqual(accepted, reopened.model.events)
+            assertion.assertEqual(result, reopened.evidence.summary())
+            assertion.assertEqual(accepted, reopened.evidence.events)
             for event in accepted:
                 for artifact in _artifacts(event):
                     assertion.assertEqual((source / artifact["path"]).read_bytes(),

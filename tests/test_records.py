@@ -5,22 +5,9 @@ import unittest
 from testar_evidence import codec
 from testar_evidence.errors import EvidenceError
 from testar_evidence.records import (
-    ActionCandidate,
-    ArtifactReference,
-    CheckReading,
-    CheckResult,
-    CheckRule,
-    CheckTarget,
-    ConcreteState,
-    EvidenceEvent,
-    Manifest,
-    Observation,
-    Run,
-    Widget,
-    validate_artifact,
-    validate_event,
-    validate_manifest,
-    validate_path,
+    ActionExecutionResult, ArtifactReference, AvailableAction, EvidenceEvent, Manifest,
+    Observation, ObservedValue, Oracle, OracleResult, OracleSeverity, OracleTarget,
+    RecordedState, TestRun, Widget, validate_artifact, validate_event, validate_manifest, validate_path,
 )
 
 
@@ -93,23 +80,23 @@ class RecordValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, code)
 
     def observation(self, **changes):
-        record = Observation("observation", "run", 1, 1000,
-                             ConcreteState("snapshot", widgets=[Widget("button")]),
-                             [ActionCandidate("activate", "button")]).to_dict()
+        record = Observation("observation", "sequence", 1, 1000,
+            RecordedState("state", widgets=[Widget("button")]), "generated",
+            [AvailableAction("activate", "button")]).to_dict()
         record.update(changes)
-        return {"schema_version": 2, "id": "event", "event": {"kind": "observed", "data": record}}
+        return {"schema_version": 3, "id": "event", "event": {"event_type": "observation_recorded", "data": record}}
 
-    def check(self, **changes):
-        record = CheckResult("run", "Property is present", CheckRule("rule"),
-                             CheckTarget.widget_property("observation", "button", "ui.text"),
-                             "failed", actual=CheckReading.absent()).to_dict()
+    def oracle_result(self, **changes):
+        record = OracleResult("run", "Property is present", Oracle("oracle"),
+            OracleTarget.widget_property("observation", "button", "ui.text"), "failed",
+            test_sequence="sequence", observed_value=ObservedValue.absent()).to_dict()
         record.update(changes)
-        return {"schema_version": 2, "id": "check", "event": {"kind": "checked", "data": record}}
+        return {"schema_version": 3, "id": "oracle", "event": {"event_type": "oracle_result_recorded", "data": record}}
 
     def test_manifest_and_event_builders_match_wire_structure(self):
-        self.assertEqual(Manifest("model").to_dict(), {"model": "model", "schema_version": 2})
-        event = EvidenceEvent("start", "run_started", Run("run", "generic", "source"))
-        expected = {"schema_version": 2, "id": "start", "event": {"kind": "run_started", "data": {
+        self.assertEqual(Manifest("evidence").to_dict(), {"evidence_id": "evidence", "schema_version": 3})
+        event = EvidenceEvent("start", "test_run_started", TestRun("run", "generic", "source"))
+        expected = {"schema_version": 3, "id": "start", "event": {"event_type": "test_run_started", "data": {
             "id": "run", "producer": "generic", "source_run": "source", "properties": {}}}}
         self.assertEqual(event.to_dict(), expected)
         self.assertEqual(EvidenceEvent.from_dict(expected).to_dict(), expected)
@@ -118,94 +105,117 @@ class RecordValidationTests(unittest.TestCase):
         event = self.observation()
         original = deepcopy(event)
         result = validate_event(event)
-        result["event"]["data"]["state"]["widgets"].clear()
+        result["event"]["data"]["recorded_state"]["widgets"].clear()
         self.assertEqual(event, original)
 
     def test_manifest_requires_supported_integer_version_and_known_fields(self):
-        for value in ({"schema_version": True, "model": "model"}, {"schema_version": 3, "model": "model"},
-                      {"schema_version": 2, "model": "model", "extra": 1},
-                      {"schema_version": 2, "model": "  "}):
+        for value in ({"schema_version": True, "evidence_id": "evidence"},
+                      {"schema_version": 4, "evidence_id": "evidence"},
+                      {"schema_version": 3, "evidence_id": "evidence", "extra": 1},
+                      {"schema_version": 3, "evidence_id": "  "}):
             with self.subTest(value=value):
                 self.assert_error("invalid_record", lambda: validate_manifest(value))
 
     def test_identifiers_and_property_names_reject_control_characters(self):
         for properties in ({"": 1}, {"bad\nname": 1}):
-            event = EvidenceEvent("start", "run_started", Run("run", "generic", "source", properties))
+            event = EvidenceEvent("start", "test_run_started", TestRun("run", "generic", "source", properties))
             self.assert_error("invalid_record", event.to_dict)
-        self.assert_error("invalid_record", lambda: EvidenceEvent("bad\x7fname", "run_finished", {
-            "run": "run", "reason": "completed"}).to_dict())
+        self.assert_error("invalid_record", lambda: EvidenceEvent("bad\x7fname", "test_run_finished", {
+            "test_run": "run", "reason": "completed"}).to_dict())
 
     def test_unknown_fields_and_invalid_field_types_are_rejected(self):
         event = self.observation()
-        event["event"]["data"]["state"]["extra"] = 1
+        event["event"]["data"]["recorded_state"]["extra"] = 1
         self.assert_error("invalid_record", lambda: validate_event(event))
-        for sequence in (-1, 1 << 64, True, Decimal("1.0"), "1"):
-            with self.subTest(sequence=sequence):
-                self.assert_error("invalid_record", lambda: validate_event(self.observation(sequence=sequence)))
+        for index in (-1, 1 << 64, True, Decimal("1.0"), "1"):
+            with self.subTest(index=index):
+                self.assert_error("invalid_record", lambda: validate_event(self.observation(observation_index=index)))
 
     def test_widget_parents_must_exist_and_form_an_acyclic_hierarchy(self):
-        cases = [([Widget("a", "missing")], "unknown_reference"),
+        cases = [([Widget("a", "missing")], "invalid_reference"),
                  ([Widget("a", "b"), Widget("b", "a")], "invalid_record"),
                  ([Widget("a"), Widget("a")], "conflict")]
         for widgets, code in cases:
             with self.subTest(code=code):
-                event = self.observation(state=ConcreteState("snapshot", widgets=widgets).to_dict(), candidates=[])
+                event = self.observation(recorded_state=RecordedState("state", widgets=widgets).to_dict(), available_actions=[])
                 self.assert_error(code, lambda: validate_event(event))
 
-    def test_candidates_reference_local_widgets_and_must_be_unique(self):
-        for candidates, code in (([ActionCandidate("activate", "missing")], "unknown_reference"),
-                                 ([ActionCandidate("activate", "button")] * 2, "conflict")):
-            event = self.observation(candidates=codec.to_data(candidates))
+    def test_available_actions_reference_local_widgets_and_must_be_unique(self):
+        for actions, code in (([AvailableAction("activate", "missing")], "invalid_reference"),
+                              ([AvailableAction("activate", "button")] * 2, "conflict")):
+            event = self.observation(available_actions=codec.to_data(actions))
             self.assert_error(code, lambda: validate_event(event))
 
-    def test_capture_and_candidate_scope_have_explicit_meanings(self):
+    def test_capture_and_available_action_scope_are_explicit(self):
         event = self.observation()
-        del event["event"]["data"]["candidate_scope"]
-        validate_event(event)
+        del event["event"]["data"]["available_action_scope"]
+        self.assert_error("invalid_record", lambda: validate_event(event))
         for scope in (None, "complete", "GENERATED"):
-            self.assert_error("invalid_record", lambda: validate_event(self.observation(candidate_scope=scope)))
+            self.assert_error("invalid_record", lambda: validate_event(self.observation(available_action_scope=scope)))
         event = self.observation()
-        event["event"]["data"]["state"]["capture"] = "unavailable"
+        event["event"]["data"]["recorded_state"]["capture"] = "unavailable"
         self.assert_error("invalid_record", lambda: validate_event(event))
 
-    def test_property_readings_distinguish_missing_capture_absence_and_null(self):
-        self.assertEqual(CheckReading.value(None).to_dict(), {"kind": "value", "value": None})
-        self.assertEqual(CheckReading.absent().to_dict(), {"kind": "absent"})
-        self.assertEqual(CheckReading.unknown().to_dict(), {"kind": "unknown"})
-        omitted = self.check()
-        self.assertNotIn("expected", omitted["event"]["data"])
-        explicit_null = self.check(expected=None, actual={"kind": "value", "value": None})
-        self.assertIn("expected", validate_event(explicit_null)["event"]["data"])
-        for actual in (None, {"kind": "value"}, {"kind": "absent", "value": None}):
-            self.assert_error("invalid_record", lambda: validate_event(self.check(actual=actual)))
+    def test_observed_values_distinguish_value_absence_unknown_and_omission(self):
+        self.assertEqual(ObservedValue.value(None).to_dict(), {"value_status": "value", "value": None})
+        self.assertEqual(ObservedValue.absent().to_dict(), {"value_status": "absent"})
+        self.assertEqual(ObservedValue.unknown().to_dict(), {"value_status": "unknown"})
+        omitted = self.oracle_result()
+        self.assertNotIn("expected_value", omitted["event"]["data"])
+        explicit_null = self.oracle_result(expected_value=None, observed_value={"value_status": "value", "value": None})
+        self.assertIn("expected_value", validate_event(explicit_null)["event"]["data"])
+        for observed in (None, {"value_status": "value"}, {"value_status": "absent", "value": None}):
+            self.assert_error("invalid_record", lambda: validate_event(self.oracle_result(observed_value=observed)))
 
-    def test_optional_rule_fields_must_have_values_when_supplied(self):
-        for rule in ({"id": "rule", "version": None}, {"id": "rule", "parameters": None}):
-            self.assert_error("invalid_record", lambda: validate_event(self.check(rule=rule)))
-        for target in (CheckTarget.run(), CheckTarget.observation("o"), CheckTarget.state_property("o", "x"),
-                       CheckTarget.widget("o", "w"), CheckTarget.execution("e"), CheckTarget.sequence("a", "b")):
-            validate_event(self.check(target=target.to_dict()))
+    def test_optional_oracle_fields_must_have_values_when_supplied(self):
+        for oracle in ({"id": "oracle", "version": None}, {"id": "oracle", "parameters": None}):
+            self.assert_error("invalid_record", lambda: validate_event(self.oracle_result(oracle=oracle)))
+        for target in (OracleTarget.test_run(), OracleTarget.test_sequence(), OracleTarget.observation("o"),
+                       OracleTarget.state_property("o", "x"), OracleTarget.widget("o", "w"),
+                       OracleTarget.action_execution("e"), OracleTarget.observation_range("a", "b")):
+            validate_event(self.oracle_result(oracle_target=target.to_dict()))
+        result = self.oracle_result()
+        del result["event"]["data"]["oracle_details"]
+        self.assert_error("invalid_record", lambda: validate_event(result))
 
-    def test_accepted_submission_cannot_report_an_error(self):
-        for accepted, error, valid in ((True, None, True), (False, "rejected", True),
-                                       (True, "error", False), (1, None, False), (False, 7, False)):
-            event = EvidenceEvent("submission", "action_submitted", {
-                "execution": "execution", "accepted": accepted, "error": error})
+    def test_execution_results_preserve_return_and_error_meanings(self):
+        for outcome, error, valid in (("returned", None, True), ("error", "runner error", True),
+                                      ("returned", "error", False), ("error", None, False), (True, None, False)):
+            event = EvidenceEvent("result", "action_execution_reported", ActionExecutionResult("execution", outcome, error))
             if valid:
                 event.to_dict()
             else:
                 self.assert_error("invalid_record", event.to_dict)
 
-    def test_artifact_paths_are_portable_and_digest_and_dimensions_validated(self):
-        artifact = ArtifactReference("image", "artifacts/image.png", "image/png", "a" * 64, 1, 2)
+    def test_nullable_fields_are_required_even_when_no_target_or_error_exists(self):
+        for record_type in ("available", "widget", "execution_result"):
+            with self.subTest(record_type=record_type):
+                if record_type == "execution_result":
+                    event = EvidenceEvent("result", "action_execution_reported", {
+                        "action_execution": "execution", "outcome": "returned"})
+                    self.assert_error("invalid_record", event.to_dict)
+                else:
+                    event = self.observation()
+                    data = event["event"]["data"]
+                    if record_type == "available":
+                        del data["available_actions"][0]["target_widget"]
+                    else:
+                        del data["recorded_state"]["widgets"][0]["parent"]
+                    self.assert_error("invalid_record", lambda: validate_event(event))
+
+    def test_severity_preserves_label_and_number_and_rejects_blank_label(self):
+        result = validate_event(self.oracle_result(oracle_severity=OracleSeverity("  High  ", Decimal("-1.25"))))
+        self.assertEqual({"label": "  High  ", "value": Decimal("-1.25")}, result["event"]["data"]["oracle_severity"])
+        for severity in ({"label": " "}, {"label": "High", "value": None}, {"label": "High", "value": True}):
+            self.assert_error("invalid_oracle_severity", lambda: validate_event(self.oracle_result(oracle_severity=severity)))
+        self.assertNotIn("oracle_severity", self.oracle_result()["event"]["data"])
+
+    def test_artifact_paths_hashes_and_unsigned_dimensions_are_validated(self):
+        artifact = ArtifactReference("image", "artifacts/image.png", "image/png", "a" * 64, 0, (1 << 64) - 1)
         validate_artifact(artifact.to_dict())
         for path in ("../image.png", "/image.png", "a\\b", "a//b", "a/CON.png", "a/end.", "a/end ", "C:/x"):
             with self.subTest(path=path):
                 self.assert_error("invalid_record", lambda: validate_path(path))
-        for change in ({"sha256": "0"}, {"width": 0}, {"height": True}, {"width": 1 << 32}):
+        for change in ({"sha256": "0"}, {"sha256": "A" * 64}, {"width": -1}, {"height": True}, {"width": 1 << 64}):
             value = {**artifact.to_dict(), **change}
             self.assert_error("invalid_record", lambda: validate_artifact(value))
-
-
-if __name__ == "__main__":
-    unittest.main()

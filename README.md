@@ -2,11 +2,9 @@
 
 A standalone Python library for validating and saving portable test execution evidence in the shared [TESTAR evidence format](https://github.com/ferpasri/testar-evidence-specs).
 
-Tool adapters supply runs, observed states, widgets, properties, discovered actions, executions, screenshots, and test-oracle results. The library checks that the records and their references are valid, then saves them as portable evidence files.
+Adapters supply test runs and sequences, recorded states, widgets, properties, available actions, executions, artifacts, and oracle results. The library checks the records and their references, then saves them as portable evidence files.
 
-Every visit remains a separate observation. Each completed action connects the observation before the action to its resulting observation, forming a state-action-state execution trace. Discovered candidates remain available even when never selected. Consumers can use the saved evidence to display traces or build derived models.
-
-Captured properties and oracle evaluations are separate evidence. Check results identify what was evaluated, the rule, its outcome, and any reported reading. The library preserves supplied property names, values, capture descriptions, known omissions, and declared aliases.
+Every capture remains a separate observation. A recorded transition connects an action execution's source observation to its resulting observation, forming a state-action-state trace. Available actions remain recorded when never executed. Captured properties and oracle evaluations are separate evidence. Consumers can display these traces or use abstraction rules to build abstract models.
 
 ## Build and test
 
@@ -20,7 +18,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 The library has no runtime dependencies. Installation uses the packaging tools declared in `pyproject.toml`; tests use Python's standard `unittest` module.
 
-A wheel is an installable Python package stored in a `.whl` file. Build one when you want to distribute the packaged library:
+A wheel is an installable Python package stored in a `.whl` file. Build one when distributing the packaged library:
 
 ```sh
 python -m pip wheel --no-deps . --wheel-dir dist
@@ -34,59 +32,54 @@ A consuming project can install this checkout as a local dependency:
 python -m pip install -e ../testar-evidence-python
 ```
 
-Import the public API from `testar_evidence`. The distribution name is `testar-evidence` and its version is `0.2.2`. `EvidenceEvent` describes one reported event together with its identity and format version. The storage API accepts an explicit, fresh output directory:
+Import the public API from `testar_evidence`. The distribution name is `testar-evidence` and its version is `0.3.0`. `EvidenceEvent` describes one reported event together with its identity and format version. The storage API accepts an explicit, fresh directory:
 
 ```python
-from testar_evidence import EvidenceEvent, JsonlStore, Manifest, Run
+from testar_evidence import EvidenceEvent, JsonlStore, Manifest, TestRun, TestSequence
 
-with JsonlStore.create("target/my-evidence", Manifest("example:model:1")) as store:
-    store.record(EvidenceEvent("example:event:1", "run_started",
-        Run("example:run:1", "example", "1")))
-    store.record(EvidenceEvent("example:event:2", "run_finished",
-        {"run": "example:run:1", "reason": "completed"}))
+with JsonlStore.create("target/my-evidence", Manifest("example:evidence:1")) as store:
+    store.record(EvidenceEvent("example:event:1", "test_run_started",
+        TestRun("example:run:1", "example", "1")))
+    store.record(EvidenceEvent("example:event:2", "test_sequence_started",
+        TestSequence("example:sequence:1", "example:run:1", 1, "1")))
+    store.record(EvidenceEvent("example:event:3", "test_sequence_finished",
+        {"test_sequence": "example:sequence:1", "reason": "completed"}))
+    store.record(EvidenceEvent("example:event:4", "test_run_finished",
+        {"test_run": "example:run:1", "reason": "completed"}))
 ```
 
-The output directory contains `manifest.json`, `evidence.jsonl`, and any referenced files under `artifacts/`. `JsonlStore.create(...)` refuses an existing manifest or evidence log so it cannot overwrite a previous trace. The runnable example below chooses a new trace directory automatically.
+The output contains `manifest.json`, `evidence.jsonl`, and referenced files under `artifacts/`. Creation refuses an existing manifest or evidence log.
 
-See [local_model.py](examples/local_model.py) for observations, candidate actions, one completed execution, and a property evaluation:
+The commented [record_evidence.py](examples/record_evidence.py) example records observations, two available button actions, one completed transition, and a property oracle result:
 
 ```sh
-python examples/local_model.py target/traces --sut demo --test-objective submit-form --origin "Example script"
+python examples/record_evidence.py target/traces --sut demo --test-objective submit-form
 ```
 
-The first argument is the parent directory. Each execution creates a child directory combining the application name, test objective, and local timestamp, for example:
+Each execution reserves a distinct timestamped directory, such as `demo_submit-form_trace-2026-10-22_15-30-12-123/`. Filename labels are sanitized; optional origin and test objective descriptions retain their supplied text in run properties. The example accepts `--origin`. An omitted test objective uses `run` only as a filename label. Load the complete generated directory in the dashboard.
 
-```text
-target/traces/demo_submit-form_trace-2026-10-22_15-30-12-123/
-```
+## Reading saved evidence
 
-The filename labels come from `--sut` and `--test-objective`. Characters unsuitable for filenames are replaced and each label is limited to 32 characters. If the name already exists, a numeric suffix such as `-2` reserves a different directory. Each execution also has distinct model and run identities. The original labels are retained in run properties. The optional `--origin` names the source of the demonstration. Without a test objective, the filename uses `run` and the objective property is omitted.
+`ReconstructedEvidence` holds recorded facts and relationships in memory for validation and inspection.
 
-This example records demonstration data; the labels do not launch an application or select a test script. Load a complete trace directory in the evidence dashboard.
+The library retains earlier records while writing so it can validate new ones. A test run contains test sequences, each with its own observations and action executions. `EvidenceReader.read(directory)` reads saved evidence without changing it. `JsonlStore.open(directory)` validates existing records before continuing a recording. `store.evidence` returns an independent snapshot for inspection.
 
-## Reading and inspecting saved traces
-
-The library keeps track of earlier records while writing so it can check new ones. For example, a selected action must refer to an existing observation and one of its candidates.
-
-`EvidenceReader.read(directory)` reads saved events and builds the corresponding records and links in memory. This supports inspecting a trace and checking that files were saved correctly. `JsonlStore.open(directory)` reads existing evidence before continuing to append valid events.
-
-The returned `EvidenceModel` also offers simple Python methods: `observations_for_run(...)` lists visits in a run, `executions_for_run(...)` lists selected action occurrences, and `outgoing(...)` lists completed action links leaving an observation. These methods return independent copies. Reading and these lookup methods support recording and inspection; consumers decide how to group observations into derived models.
+`test_sequences_for_run`, `observations_for_sequence`, `executions_for_sequence`, `incoming`, and `outgoing` provide simple lookups. Consumers decide how to build an abstract model from these traces.
 
 ## Shared conformance data
 
-Each case supplies an input trace: `manifest.json`, `evidence.jsonl` (one recorded event per line), and referenced artifacts. The library reads those events to build the corresponding records and links in memory (the reconstructed model). Tests compare a summary of that model with `expected.json`, which describes the expected records or rejection. They also verify complete accepted event contents and artifact bytes. The reconstructed model preserves concrete evidence; consumers can derive abstract or merged models separately.
+The preparation command queries the public [specs releases](https://github.com/ferpasri/testar-evidence-specs/releases), selects the newest publication by `published_at`, including prereleases, and downloads its conformance files over HTTPS. It validates archive paths, extraction limits, case completeness, and checksums. The ignored `target/conformance/` cache includes the selected release and locally computed SHA-256 checksums. Failed preparation reports the error and preserves the previous selection.
 
-Preparation queries the public [specs releases](https://github.com/ferpasri/testar-evidence-specs/releases) and selects the newest publication, including prereleases. It downloads the conformance files into ignored `target/conformance/` and records the release and file checksums. Tests verify that selection and use the prepared files offline. Repeat preparation to check the newest release, including before CI tests. Deleting `target/` removes the prepared data and example output.
+Tests discover every prepared case and verify the cached checksums. Each case supplies an **input trace**: `manifest.json`, `evidence.jsonl`, and referenced artifacts. Reading those events reconstructs the recorded history in memory. Tests compare a summary with the **expected result** in `expected.json`, and verify complete accepted payloads, artifact bytes, and rejected-event behavior.
 
-Reader tests open each supplied trace. Producer tests submit its events through the recording API, reopen the generated files, and compare against the same expectations. Invalid cases check the reported error and preserve the previously accepted evidence. The shared [conformance explanation](https://github.com/ferpasri/testar-evidence-specs/blob/main/conformance/README.md#input-trace-reconstructed-model-and-expected-result) describes these file roles and comparisons.
+Reader tests load supplied evidence. Producer tests record equivalent evidence through the public API and reopen it. Cases cover capture limits and aliases, unexecuted available actions, independent sequences, action execution results, optional oracle severity, metadata, and temporal results. See the shared [conformance explanation](https://github.com/ferpasri/testar-evidence-specs/blob/v0.3.0/conformance/README.md).
 
-## Run metadata
+After preparation, tests use the cache offline. Repeat preparation before checking compatibility with the latest release, including in CI. Deleting `target/` removes both the cache and generated output.
 
-Run properties support optional origin, test objective, adapter name, and adapter version using the [shared run metadata names](https://github.com/ferpasri/testar-evidence-specs/blob/main/docs/run-metadata.md). Supplied descriptions keep their original text; omitted descriptions stay omitted. See [the implementation specification](docs/SPEC.md#run-metadata) for their use.
+## Run metadata and versions
 
-## Release versions
+Run and sequence properties retain optional origin, test objective, adapter name, and adapter version using the [shared metadata names](https://github.com/ferpasri/testar-evidence-specs/blob/v0.3.0/docs/run-metadata.md). Supplied descriptions retain Unicode and spacing; omitted descriptions remain absent.
 
-Releases use `0.X.Y`. The `0.X` release series is shared with the specs and related evidence projects. Each project increments `Y` independently for fixes and improvements within that series. Evidence compatibility follows its `schema_version` and validation rules.
+Releases use `0.X.Y`. The `0.X` release series is shared with the specs and related evidence projects. Each project increments `Y` independently within that series. Evidence compatibility follows its `schema_version` and validation rules.
 
-See [SPEC.md](docs/SPEC.md) for the implemented behavior and [TODO.md](TODO.md) for planned work.
-
+See [SPEC.md](docs/SPEC.md) for implemented behavior and [TODO.md](TODO.md) for planned work.

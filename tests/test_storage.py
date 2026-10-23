@@ -9,21 +9,28 @@ from testar_evidence import EvidenceError, EvidenceReader, JsonlStore, Manifest
 from testar_evidence.codec import dumps
 
 
-def event(identity, kind, data):
-    return {"schema_version": 2, "id": identity, "event": {"kind": kind, "data": data}}
+def event(identity, event_type, data):
+    return {"schema_version": 3, "id": identity, "event": {"event_type": event_type, "data": data}}
 
 
 def started():
-    return event("start", "run_started", {
+    return event("start", "test_run_started", {
         "id": "run", "producer": "example", "source_run": "1", "properties": {},
     })
 
 
+def sequence_started():
+    return event("sequence-start", "test_sequence_started", {
+        "id": "sequence", "test_run": "run", "sequence_index": 1,
+        "source_sequence": "source:sequence", "properties": {},
+    })
+
+
 def observed(artifacts=None, properties=None):
-    return event("visit", "observed", {
-        "id": "visit", "run": "run", "sequence": 1, "timestamp_micros": 0,
-        "state": {"id": "state", "properties": properties or {}, "widgets": [], "capture": "filtered"},
-        "candidates": [], "candidate_scope": "unknown", "artifacts": artifacts or [],
+    return event("visit", "observation_recorded", {
+        "id": "visit", "test_sequence": "sequence", "observation_index": 1, "timestamp_micros": 0,
+        "recorded_state": {"id": "state", "properties": properties or {}, "widgets": [], "capture": "filtered"},
+        "available_actions": [], "available_action_scope": "unknown", "artifacts": artifacts or [],
     })
 
 
@@ -31,29 +38,30 @@ class StorageTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name) / "model"
+        self.root = Path(self.temporary.name) / "evidence"
 
     def test_record_reopen_exact_numbers_and_idempotent_retry(self):
         reading = {"source.number": Decimal("0.1234567890123456789012345"), "source.integer": 2 ** 100}
         with JsonlStore.create(self.root, Manifest("example")) as store:
             self.assertTrue(store.record(started()))
+            store.record(sequence_started())
             self.assertTrue(store.record(observed(properties=reading)))
             before = (self.root / "evidence.jsonl").read_bytes()
             self.assertFalse(store.record(observed(properties=reading)))
             self.assertEqual(before, (self.root / "evidence.jsonl").read_bytes())
         with JsonlStore.open(self.root) as reopened:
-            self.assertEqual(reopened.model.observations["visit"]["state"]["properties"], reading)
-            self.assertEqual(reopened.model.event_count, 2)
-            detached = reopened.model
-            detached.apply(event("finish", "run_finished", {"run": "run", "reason": "completed"}))
-            self.assertNotEqual(detached.summary(), reopened.model.summary())
+            self.assertEqual(reopened.evidence.observations["visit"]["recorded_state"]["properties"], reading)
+            self.assertEqual(reopened.evidence.event_count, 3)
+            detached = reopened.evidence
+            detached.apply(event("finish", "test_sequence_finished", {"test_sequence": "sequence", "reason": "completed"}))
+            self.assertNotEqual(detached.summary(), reopened.evidence.summary())
 
-    def test_invalid_event_does_not_change_model_or_log(self):
+    def test_invalid_event_does_not_change_history_or_log(self):
         with JsonlStore.create(self.root, Manifest("example")) as store:
             before = (self.root / "evidence.jsonl").read_bytes()
             with self.assertRaises(EvidenceError):
                 store.record(observed())
-            self.assertEqual(store.model.event_count, 0)
+            self.assertEqual(store.evidence.event_count, 0)
             self.assertEqual(before, (self.root / "evidence.jsonl").read_bytes())
 
     def test_artifacts_deduplicate_verify_and_preserve_bytes(self):
@@ -64,8 +72,9 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(reference, store.put_artifact(data, "application/octet-stream"))
             self.assertEqual(data, store.read_artifact(reference))
             store.record(started())
+            store.record(sequence_started())
             store.record(observed([reference]))
-        self.assertEqual(EvidenceReader.read(self.root).event_count, 2)
+        self.assertEqual(EvidenceReader.read(self.root).event_count, 3)
         (self.root / reference["path"]).write_bytes(b"changed")
         with self.assertRaises(EvidenceError):
             EvidenceReader.read(self.root)
@@ -75,9 +84,11 @@ class StorageTests(unittest.TestCase):
                      "sha256": "a" * 64, "width": None, "height": None}
         with JsonlStore.create(self.root, Manifest("example")) as store:
             store.record(started())
-            with self.assertRaises(EvidenceError):
+            store.record(sequence_started())
+            with self.assertRaises(EvidenceError) as caught:
                 store.record(observed([reference]))
-            self.assertEqual(store.model.event_count, 1)
+            self.assertEqual("missing_file", caught.exception.code)
+            self.assertEqual(store.evidence.event_count, 2)
 
     def test_writer_lock_excludes_open_create_and_recovery(self):
         with JsonlStore.create(self.root, Manifest("example")):
@@ -133,7 +144,7 @@ class StorageTests(unittest.TestCase):
             with patch("testar_evidence.storage._write_all", side_effect=fail_write):
                 with self.assertRaises(OSError):
                     store.record(started())
-            self.assertEqual(store.model.event_count, 0)
+            self.assertEqual(store.evidence.event_count, 0)
             with self.assertRaises(EvidenceError) as caught:
                 store.record(started())
             self.assertEqual(caught.exception.code, "writer_failed")
@@ -181,7 +192,7 @@ class StorageTests(unittest.TestCase):
                 JsonlStore.create(self.root, Manifest("example"))
         self.assertFalse((self.root / "manifest.json").exists())
         with JsonlStore.create(self.root, Manifest("example")) as store:
-            self.assertEqual(store.model.event_count, 0)
+            self.assertEqual(store.evidence.event_count, 0)
 
     def test_keyboard_interrupt_invalidates_the_writer(self):
         with JsonlStore.create(self.root, Manifest("example")) as store:
