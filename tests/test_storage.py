@@ -5,7 +5,10 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from testar_evidence import EvidenceError, EvidenceReader, JsonlStore, Manifest
+from testar_evidence import (
+    EvidenceError, EvidenceEvent, EvidenceReader, JsonlStore, Manifest, Observation, RecordedState, Widget,
+)
+from testar_evidence import storage
 from testar_evidence.codec import dumps
 
 
@@ -55,6 +58,45 @@ class StorageTests(unittest.TestCase):
             detached = reopened.evidence
             detached.apply(event("finish", "test_sequence_finished", {"test_sequence": "sequence", "reason": "completed"}))
             self.assertNotEqual(detached.summary(), reopened.evidence.summary())
+
+    def test_input_changes_during_write_cannot_change_the_prepared_record(self):
+        for typed in (False, True):
+            with self.subTest(typed=typed):
+                directory = self.root / str(typed)
+                properties = {"nested": {"value": "before"}}
+                observation = Observation("visit", "sequence", 1, 0,
+                    RecordedState("state", properties, [Widget("widget", properties=properties)]), "unknown")
+                envelope = EvidenceEvent("visit", "observation_recorded", observation)
+                if not typed:
+                    envelope = envelope.to_dict()
+                    properties = envelope["event"]["data"]["recorded_state"]["properties"]
+                with JsonlStore.create(directory, Manifest("example")) as store:
+                    store.record(started())
+                    store.record(sequence_started())
+                    write_all = storage._write_all
+
+                    def write_and_change_input(output, data):
+                        properties["nested"]["value"] = "after"
+                        write_all(output, data)
+
+                    with patch("testar_evidence.storage._write_all", side_effect=write_and_change_input):
+                        store.record(envelope)
+                    saved = store.evidence.observation("visit")["recorded_state"]
+                    self.assertEqual("before", saved["properties"]["nested"]["value"])
+                    self.assertEqual("before", saved["widgets"][0]["properties"]["nested"]["value"])
+                self.assertEqual(saved, EvidenceReader.read(directory).observation("visit")["recorded_state"])
+
+    def test_invalid_typed_widget_reference_is_rejected_before_writing(self):
+        observation = Observation("visit", "sequence", 1, 0,
+            RecordedState("state", widgets=[Widget("child", parent="missing")]), "unknown")
+        with JsonlStore.create(self.root, Manifest("example")) as store:
+            store.record(started())
+            store.record(sequence_started())
+            before = (self.root / "evidence.jsonl").read_bytes()
+            with self.assertRaises(EvidenceError):
+                store.record(EvidenceEvent("visit", "observation_recorded", observation))
+            self.assertEqual(before, (self.root / "evidence.jsonl").read_bytes())
+            self.assertEqual(2, store.evidence.event_count)
 
     def test_invalid_event_does_not_change_history_or_log(self):
         with JsonlStore.create(self.root, Manifest("example")) as store:

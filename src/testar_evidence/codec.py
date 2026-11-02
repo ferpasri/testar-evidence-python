@@ -6,12 +6,24 @@ from dataclasses import fields, is_dataclass
 from decimal import Decimal, DecimalException
 import json
 import math
+import re
 from typing import Any
 
 from .errors import EvidenceError
 
 MAX_DEPTH = 64
 MAX_STRING_LENGTH = 16 * 1024 * 1024
+_SURROGATES = re.compile("[\ud800-\udfff]")
+
+
+class _JsonRecord:
+    """Internal record fields consumed by one recursive conversion."""
+
+    def _json_data(self):
+        raise NotImplementedError
+
+    def to_dict(self):
+        return to_data(self._json_data())
 
 
 def _invalid(message: str) -> EvidenceError:
@@ -86,7 +98,7 @@ def to_data(value: Any) -> Any:
         if isinstance(current, str):
             if len(current) > MAX_STRING_LENGTH:
                 raise _invalid("JSON string exceeds the maximum length")
-            if any(0xD800 <= ord(character) <= 0xDFFF for character in current):
+            if _SURROGATES.search(current) is not None:
                 raise _invalid("JSON strings cannot contain unpaired Unicode surrogates")
             return current
         if current is None or isinstance(current, (bool, int)):
@@ -104,6 +116,8 @@ def to_data(value: Any) -> Any:
             raise _invalid("JSON values cannot contain cycles")
         active.add(identity)
         try:
+            if isinstance(current, _JsonRecord) and type(current).to_dict is _JsonRecord.to_dict:
+                return convert(current._json_data(), depth)
             if hasattr(current, "to_dict"):
                 return convert(current.to_dict(), depth)
             if is_dataclass(current) and not isinstance(current, type):
@@ -127,6 +141,11 @@ def to_data(value: Any) -> Any:
 
 def dumps(value: Any, *, sort_keys: bool = False) -> str:
     """Write compact JSON, preserving exact decimal and integer values."""
+    return _dumps_prepared(to_data(value), sort_keys=sort_keys)
+
+
+def _dumps_prepared(value: Any, *, sort_keys: bool = False) -> str:
+    """Encode library-owned data already checked and normalized by to_data."""
     def encode(current: Any) -> str:
         if current is None:
             return "null"
@@ -148,4 +167,4 @@ def dumps(value: Any, *, sort_keys: bool = False) -> str:
         keys = sorted(current) if sort_keys else current
         return "{" + ",".join(encode(key) + ":" + encode(current[key]) for key in keys) + "}"
 
-    return encode(to_data(value))
+    return encode(value)

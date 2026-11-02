@@ -11,7 +11,7 @@ from uuid import uuid4
 from . import codec
 from .errors import EvidenceError
 from .reconstructed_evidence import ReconstructedEvidence
-from .records import validate_artifact, validate_manifest, validate_path
+from .records import _prepare_event, _validate_prepared_event, validate_artifact, validate_manifest, validate_path
 
 MAX_RECORD_BYTES = 16 * 1024 * 1024
 
@@ -215,11 +215,12 @@ class JsonlStore:
     def record(self, envelope) -> bool:
         with self._mutex:
             self._require_writable()
-            envelope = codec.to_data(envelope)
-            if not self._evidence.validate(envelope):
+            envelope = _prepare_event(envelope)
+            _validate_prepared_event(envelope)
+            if not self._evidence._validate(envelope):
                 return False
             _verify_artifacts(self.directory, envelope)
-            content = (codec.dumps(envelope) + "\n").encode("utf-8")
+            content = (codec._dumps_prepared(envelope) + "\n").encode("utf-8")
             if len(content) - 1 > MAX_RECORD_BYTES:
                 raise EvidenceError("size_limit", "Evidence record exceeds the size limit")
             try:
@@ -227,7 +228,7 @@ class JsonlStore:
             except BaseException:
                 self._failed = True
                 raise
-            self._evidence.apply(envelope)
+            self._evidence._apply_prepared(envelope)
             return True
 
     def put_artifact(self, data: bytes, media_type: str, width=None, height=None) -> dict:

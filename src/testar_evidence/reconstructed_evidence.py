@@ -6,7 +6,6 @@ from copy import deepcopy
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from .codec import to_data
 from .errors import EvidenceError
 from .records import validate_event, validate_manifest
 from .oracle_validation import validate_oracle_result
@@ -42,7 +41,7 @@ class ReconstructedEvidence:
     """
 
     def __init__(self, manifest: dict[str, Any] | Manifest) -> None:
-        self._manifest = validate_manifest(to_data(manifest))
+        self._manifest = validate_manifest(manifest)
         self._test_runs: dict[str, dict[str, Any]] = {}
         self._test_sequences: dict[str, dict[str, Any]] = {}
         self._observations: dict[str, dict[str, Any]] = {}
@@ -57,7 +56,7 @@ class ReconstructedEvidence:
 
     def validate(self, envelope: dict[str, Any] | EvidenceEvent) -> bool:
         """Check without recording; return False for an identical event retry."""
-        return self._validate(validate_event(to_data(envelope)))
+        return self._validate(validate_event(envelope))
 
     def _validate(self, envelope: dict[str, Any]) -> bool:
         previous = self._events.get(envelope["id"])
@@ -101,9 +100,13 @@ class ReconstructedEvidence:
 
     def apply(self, envelope: dict[str, Any] | EvidenceEvent) -> bool:
         """Validate before changing history, preserving accepted payloads and report order."""
-        prepared = validate_event(to_data(envelope))
+        prepared = validate_event(envelope)
         if not self._validate(prepared):
             return False
+        return self._apply_prepared(prepared)
+
+    def _apply_prepared(self, prepared: dict[str, Any]) -> bool:
+        """Apply an exclusively owned event whose structure and references were checked."""
         event_type = prepared["event"]["event_type"]
         data = prepared["event"]["data"]
         if event_type == "test_run_started":

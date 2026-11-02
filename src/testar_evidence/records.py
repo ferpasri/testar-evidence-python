@@ -8,7 +8,7 @@ import math
 import re
 from typing import Any
 
-from .codec import to_data
+from .codec import _JsonRecord, to_data
 from .errors import EvidenceError
 
 SCHEMA_VERSION = 3
@@ -26,10 +26,10 @@ class _Unspecified:
 UNSPECIFIED = _Unspecified()
 
 
-class _Record:
-    def to_dict(self) -> dict[str, Any]:
-        return to_data({item.name: getattr(self, item.name) for item in fields(self)
-                        if getattr(self, item.name) is not UNSPECIFIED})
+class _Record(_JsonRecord):
+    def _json_data(self) -> dict[str, Any]:
+        return {item.name: getattr(self, item.name) for item in fields(self)
+                if getattr(self, item.name) is not UNSPECIFIED}
 
 
 @dataclass(frozen=True)
@@ -53,8 +53,7 @@ class EvidenceEvent:
     schema_version: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        return validate_event({"schema_version": self.schema_version, "id": self.id,
-                               "event": {"event_type": self.event_type, "data": to_data(self.data)}})
+        return validate_event(self)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> EvidenceEvent:
@@ -455,9 +454,21 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def validate_event(value: dict[str, Any]) -> dict[str, Any]:
+def _prepare_event(value: dict[str, Any] | EvidenceEvent) -> dict[str, Any]:
+    """Detach the input once, without recursively validating the outer event."""
+    if isinstance(value, EvidenceEvent):
+        value = {"schema_version": value.schema_version, "id": value.id,
+                 "event": {"event_type": value.event_type, "data": value.data}}
+    return to_data(value)
+
+
+def validate_event(value: dict[str, Any] | EvidenceEvent) -> dict[str, Any]:
     """Validate one Evidence Event and its local references; return an independent copy."""
-    result = to_data(value)
+    return _validate_prepared_event(_prepare_event(value))
+
+
+def _validate_prepared_event(result: dict[str, Any]) -> dict[str, Any]:
+    """Check library-owned data without another conversion or copy."""
     _fields(result, {"schema_version", "id", "event"}, name="Evidence Event")
     _require(type(result["schema_version"]) is int and result["schema_version"] == SCHEMA_VERSION,
              f"Supported schema version is {SCHEMA_VERSION}", "schema_version")
