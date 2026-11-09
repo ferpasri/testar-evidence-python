@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 from testar_evidence import (
-    EvidenceError, EvidenceEvent, EvidenceReader, JsonlStore, Manifest, Observation, RecordedState, Widget,
+    EvidenceError, EvidenceEvent, EvidenceReader, JsonlStore, Manifest, Observation, RecordedState, ReconstructedEvidence, Widget,
 )
 from testar_evidence import storage
 from testar_evidence.codec import dumps
@@ -58,6 +58,43 @@ class StorageTests(unittest.TestCase):
             detached = reopened.evidence
             detached.apply(event("finish", "test_sequence_finished", {"test_sequence": "sequence", "reason": "completed"}))
             self.assertNotEqual(detached.summary(), reopened.evidence.summary())
+
+    def test_available_actions_query_copies_only_the_requested_bindings(self):
+        with JsonlStore.create(self.root, Manifest("example")) as store:
+            store.record(started())
+            store.record(sequence_started())
+            store.record(event("describe", "action_described", {
+                "id": "click", "action_type": "click", "properties": {},
+            }))
+            observation = observed()
+            expected = [{"action_description": "click", "target_widget": None}]
+            observation["event"]["data"].update(available_actions=expected, available_action_scope="eligible")
+            store.record(observation)
+            before = (self.root / "evidence.jsonl").read_bytes()
+            # A query needs only this observation's bindings. Guard against
+            # accidentally copying the complete history or widget collection.
+            with patch.object(ReconstructedEvidence, "snapshot", side_effect=AssertionError("Full history copy")), \
+                    patch.object(ReconstructedEvidence, "observations", new_callable=PropertyMock,
+                                 side_effect=AssertionError("All observations copied")):
+                returned = store.available_actions("visit")
+                self.assertEqual(expected, returned)
+                returned[0]["target_widget"] = "changed"
+                returned.clear()
+                self.assertEqual(expected, store.available_actions("visit"))
+            self.assertEqual(before, (self.root / "evidence.jsonl").read_bytes())
+
+    def test_available_actions_query_distinguishes_empty_unknown_and_closed(self):
+        with JsonlStore.create(self.root, Manifest("example")) as store:
+            store.record(started())
+            store.record(sequence_started())
+            store.record(observed())
+            self.assertEqual([], store.available_actions("visit"))
+            with self.assertRaises(EvidenceError) as missing:
+                store.available_actions("missing")
+            self.assertEqual("invalid_reference", missing.exception.code)
+        with self.assertRaises(EvidenceError) as closed:
+            store.available_actions("visit")
+        self.assertEqual("closed", closed.exception.code)
 
     def test_input_changes_during_write_cannot_change_the_prepared_record(self):
         for typed in (False, True):

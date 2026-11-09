@@ -32,6 +32,8 @@ Source properties, capture descriptions, aliases, omissions, and optional run/se
 
 `EvidenceReader.read(directory)` validates saved evidence without opening a writer. `JsonlStore.open(directory)` validates it before continued recording. `store.evidence` returns an independent snapshot. Accepted records and returned collections are independent copies; later changes to supplied dataclasses or dictionaries cannot alter history. `ReconstructedEvidence` is intended for one caller at a time.
 
+`JsonlStore.available_actions(observation)` returns an independent copy of one committed observation's action bindings under the store lock. Unknown observations raise `invalid_reference`; a closed store raises `closed`.
+
 Lookup methods expose recorded sequences, observations, executions, and incoming/outgoing transitions. They preserve recorded facts and do not construct an abstract model.
 
 Artifacts use SHA-256 identities and relative paths. Identical bytes reuse files; PNG, JPEG, and other media use `.png`, `.jpeg`, and `.bin` paths. Reading and recording verify referenced bytes. Path validation rejects traversal and unsafe platform-specific names.

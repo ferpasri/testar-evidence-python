@@ -212,6 +212,12 @@ class JsonlStore:
             self._require_open()
             return self._evidence.snapshot()
 
+    def available_actions(self, observation: str) -> list[dict]:
+        """Return independent action bindings for one committed observation."""
+        with self._mutex:
+            self._require_open()
+            return self._evidence.available_actions(observation)
+
     def record(self, envelope) -> bool:
         with self._mutex:
             self._require_writable()
